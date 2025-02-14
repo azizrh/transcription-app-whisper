@@ -1,0 +1,6 @@
+flask==2.0.1
+openai-whisper==20231117
+transformers==4.30.2
+torch==2.0.1
+pydub==0.25.1
+numpy==1.21.0

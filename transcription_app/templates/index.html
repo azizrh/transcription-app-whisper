@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-time Transcription and Translation</title>
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+</head>
+<body class="bg-gray-100 p-8">
+    <div class="max-w-6xl mx-auto" x-data="transcriptionApp">
+        <h1 class="text-3xl font-bold mb-8 text-center">Real-time Transcription and Translation</h1>
+        
+        <div class="bg-white rounded-lg shadow-lg p-6 mb-8">
+            <div class="flex items-center space-x-4 mb-6">
+                <select 
+                    x-model="targetLang" 
+                    class="border rounded px-3 py-2"
+                >
+                    <template x-for="(name, code) in languages" :key="code">
+                        <option :value="code" x-text="name"></option>
+                    </template>
+                </select>
+                
+                <button 
+                    @click="toggleRecording"
+                    :class="isRecording ? 'bg-red-500 hover:bg-red-600' : 'bg-blue-500 hover:bg-blue-600'"
+                    class="text-white px-4 py-2 rounded transition-colors"
+                    x-text="isRecording ? 'Stop Recording' : 'Start Recording'"
+                ></button>
+                
+                <button 
+                    @click="clearText"
+                    class="bg-gray-500 text-white px-4 py-2 rounded hover:bg-gray-600 transition-colors"
+                >
+                    Clear
+                </button>
+                
+                <span class="text-gray-600" x-text="'Status: ' + status"></span>
+            </div>
+            
+            <div class="grid grid-cols-2 gap-6">
+                <div class="border rounded-lg p-4">
+                    <h2 class="text-lg font-semibold mb-2">Original Text</h2>
+                    <div 
+                        class="h-96 overflow-y-auto bg-gray-50 p-4 rounded space-y-2"
+                        x-ref="transcription"
+                    >
+                        <template x-for="entry in transcriptions" :key="entry.timestamp">
+                            <p class="leading-relaxed">
+                                <span class="text-gray-500" x-text="'[' + entry.timestamp + ']'"></span>
+                                <span x-text="entry.text"></span>
+                            </p>
+                        </template>
+                    </div>
+                </div>
+                
+                <div class="border rounded-lg p-4">
+                    <h2 class="text-lg font-semibold mb-2">Translated Text</h2>
+                    <div 
+                        class="h-96 overflow-y-auto bg-gray-50 p-4 rounded space-y-2"
+                        x-ref="translation"
+                    >
+                        <template x-for="entry in translations" :key="entry.timestamp">
+                            <p class="leading-relaxed">
+                                <span class="text-gray-500" x-text="'[' + entry.timestamp + ']'"></span>
+                                <span x-text="entry.text"></span>
+                            </p>
+                        </template>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+
+    <script>
+        document.addEventListener('alpine:init', () => {
+            Alpine.data('transcriptionApp', () => ({
+                isRecording: false,
+                status: 'Ready',
+                targetLang: 'es',
+                mediaRecorder: null,
+                audioChunks: [],
+                transcriptions: [],
+                translations: [],
+                processingQueue: [],
+                isProcessing: false,
+                languages: {
+                    'es': 'Spanish',
+                    'fr': 'French',
+                    'de': 'German',
+                    'it': 'Italian'
+                },
+     
+                async toggleRecording() {
+                    if (!this.isRecording) {
+                        try {
+                            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                            this.mediaRecorder = new MediaRecorder(stream, {
+                                mimeType: 'audio/webm',
+                                audioBitsPerSecond: 16000
+                            });
+                            this.mediaRecorder.ondataavailable = (event) => {
+                                if (event.data.size > 0) {
+                                    this.audioChunks.push(event.data);
+                                    this.processAudioChunk();
+                                }
+                            };
+     
+                            this.audioChunks = [];
+                            // Reduced chunk size for more frequent updates
+                            this.mediaRecorder.start(1000);  // 1 second chunks
+                            this.isRecording = true;
+                            this.status = 'Recording';
+                        } catch (err) {
+                            console.error('Error accessing microphone:', err);
+                            this.status = 'Error: Could not access microphone';
+                        }
+                    } else {
+                        this.mediaRecorder.stop();
+                        this.isRecording = false;
+                        this.status = 'Processing final chunk...';
+                        await this.processRemainingChunks();
+                        this.status = 'Ready';
+                    }
+                },
+     
+                async processAudioChunk() {
+                    if (this.audioChunks.length === 0) return;
+     
+                    const audioBlob = new Blob(this.audioChunks, { type: 'audio/webm' });
+                    this.audioChunks = [];  // Clear for next chunk
+                    const reader = new FileReader();
+                    reader.onload = async () => {
+                        try {
+                            const response = await fetch('/process_audio', {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                },
+                                body: JSON.stringify({
+                                    audio: reader.result,
+                                    target_lang: this.targetLang
+                                }),
+                            });
+     
+                            const data = await response.json();
+                            if (data.error) {
+                                console.error('Processing error:', data.error);
+                                return;
+                            }
+     
+                            if (data.transcription?.trim()) {
+                                const timestamp = new Date().toLocaleTimeString();
+                                this.transcriptions.push({
+                                    timestamp,
+                                    text: data.transcription
+                                });
+                                if (data.translation) {
+                                    this.translations.push({
+                                        timestamp,
+                                        text: data.translation
+                                    });
+                                }
+     
+                                // Scroll both displays to bottom
+                                this.$nextTick(() => {
+                                    this.$refs.transcription.scrollTop = this.$refs.transcription.scrollHeight;
+                                    this.$refs.translation.scrollTop = this.$refs.translation.scrollHeight;
+                                });
+                            }
+                        } catch (error) {
+                            console.error('Error processing audio:', error);
+                        }
+                    };
+     
+                    reader.readAsDataURL(audioBlob);
+                },
+     
+                async processRemainingChunks() {
+                    if (this.audioChunks.length > 0) {
+                        await this.processAudioChunk();
+                    }
+                },
+     
+                clearText() {
+                    this.transcriptions = [];
+                    this.translations = [];
+                }
+            }));
+        });
+    </script>
+</body>
+</html>
